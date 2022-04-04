@@ -6,15 +6,16 @@
 #include <time.h>
 #include <fstream>
 //Вариант 9
+// 
 //mpiexec -n 4 "C:\Parallel 3.2\MinimalGrid\x64\Debug\MinimalGrid.exe"
-
+//mpiexec -n 4 "B:\3.1 Parralel\GridMinimal\MPIMinimal\x64\Debug\MinimalGrid.exe"
+// 
 //Топология
-#define ndim 2
+#define ndim 1
 
 //Шаги
-#define hCrash 3
+#define hEnd 0.000025
 #define hStart 0.01
-#define hEnd 0.0001
 
 //Область
 #define top 5
@@ -79,14 +80,11 @@ int main(int argv, char** argc)
 	//Работа с топологией
 	MPI_Comm cart_comm;
 	int cords[ndim];
-	int dims[ndim] = { 0,0 };
-	int periods[ndim] = { 0,0 };
+	int dims[ndim] = { 0 };
+	int periods[ndim] = { 0 };
 	MPI_Dims_create(size, ndim, dims);
 	MPI_Cart_create(MPI_COMM_WORLD, ndim, dims, periods, 0, &cart_comm);
 	MPI_Cart_coords(cart_comm, rank, ndim, cords);
-	int sourceX, destX, sourceY, destY;
-	MPI_Cart_shift(cart_comm, 0, 1, &sourceX, &destX);
-	MPI_Cart_shift(cart_comm, 1, 1, &sourceY, &destY);
 
 	double step = hStart;
 
@@ -107,84 +105,99 @@ int main(int argv, char** argc)
 	}
 
 	//Нахождение стартовых элементов
-	int startElementX = left;
+	double startElementX = left;
 	for (int i = 0; i < cords[0];i++) {
-		startElementX += colX[i];
+		startElementX += colX[i] * step;
 	}
-	int colY = top - bottom;
-	int startElementY = bottom;
 	point min;
 
-		//Нахождение локального минимума
-		min = findMin(startElementX, colX[rank] * step, startElementY, colY * step, step);
+	//Нахождение локального минимума
+	min = findMin(startElementX, colX[rank] * step, bottom, top, step);
 
-		//Нахождение глобального минимума
-		double * buf = new double[3];
-		cout << rank << " My value:" << min.value << endl;
-		//Заменить на отправку на нулевой
-		//MPI_Allreduce(&buf, &result, 1, MPI_DOUBLE, MPI_MIN, cart_comm);
-		if (rank == 0) {
-			point* minList = new point[size];
-			double** results = new double*[size];
-			results[0] = new double[3];
-			results[0][0] = min.value;
-			results[0][1] = min.x;
-			results[0][2] = min.y;
-			for (int i = 1; i < size; i++) {
-				results[i] = new double[3];
-				MPI_Recv(results[i], 3, MPI_DOUBLE, MPI_ANY_SOURCE, 0, cart_comm, &status);
-			}
-			
-			for (int i = 1; i < size; i++) {
-				if (results[i][0] < min.value) {
-					min.value = results[i][0];
-					min.x = results[i][1];
-					min.y = results[i][2];
-				}
-				if (results[i][0] == min.value) {
-					point temp;
-					temp.value = results[i][0];
-					temp.x = results[i][1];
-					temp.y = results[i][2];
-
-					minList[0] = temp;
-					minList[0] = temp;
-					minList[0] = temp;
-				}
+	//Нахождение глобального минимума
+	double * buf = new double[3];
+	cout << rank << " My value:" << min.value << endl;
+	double* globalMinimum = new double[3];
+	if (rank == 0) {
+		double** results = new double*[size];
+		results[0] = new double[3];
+		results[0][0] = min.value;
+		results[0][1] = min.x;
+		results[0][2] = min.y;
+		globalMinimum[0] = min.value;
+		globalMinimum[1] = min.x;
+		globalMinimum[2] = min.y;
+		for (int i = 1; i < size; i++) {
+			results[i] = new double[3];
+			MPI_Recv(results[i], 3, MPI_DOUBLE, MPI_ANY_SOURCE, 0, cart_comm, &status);
+		}
+		
+		for (int i = 1; i < size; i++) {
+			if (results[i][0] < globalMinimum[0]) {
+				globalMinimum[0] = results[i][0];
+				globalMinimum[1] = results[i][1];
+				globalMinimum[2] = results[i][2];
 			}
 		}
+		for (int i = 1; i < size; i++) {
+			MPI_Send(globalMinimum, 3, MPI_DOUBLE, i, 0, cart_comm);
+		}
+		
+	}
+	else {
+		globalMinimum[0] = min.value;
+		globalMinimum[1] = min.x;
+		globalMinimum[2] = min.y;
+		MPI_Send(globalMinimum, 3, MPI_DOUBLE, 0, 0, cart_comm);
+		MPI_Recv(globalMinimum, 3, MPI_DOUBLE, 0, 0, cart_comm, &status);
+	}
 
-		//Отправка данных
-		double* data;
-		if (result == buf) {
-			data = new double[3];
-			data[0] = min.x;
-			data[1] = min.y;
-			data[2] = min.value;
-			for (int i = 0; i < size; i++) {
-				if (i != rank) {
-					MPI_Send(&data, 3, MPI_DOUBLE, i, 0, cart_comm);
-					cout << rank << " To " << i << endl;
-				}
-			}
-		}
-		else {
-			data = new double[3];
-			MPI_Recv(&data, 3, MPI_DOUBLE, MPI_ANY_SOURCE, 0, cart_comm, &status);
-		}
-		startElementX = data[0] - step;
-		for (int i = 0; i < cords[0]; i++) {
-			startElementX += colX[i];
-		}
-		startElementY = data[1] - step;
-		step /= hCrash;
+
+	step = hEnd;
+	startElementX = globalMinimum[1]-hStart;
+	for (int i = 0; i < cords[0]; i++) {
+		startElementX += colX[i] * step;
+	}
+
+	//Нахождение локального минимума
+	min = findMin(startElementX, colX[rank] * step, globalMinimum[2] - hStart, globalMinimum[2] + hStart, step);
+	
 
 	if (rank == 0) {
-		cout << "### x:" << min.x << " y:" << min.y << " value:" << min.value << endl;
+		
+		double** results = new double* [size];
+		results[0] = new double[3];
+		results[0][0] = min.value;
+		results[0][1] = min.x;
+		results[0][2] = min.y;
+		globalMinimum[0] = min.value;
+		globalMinimum[1] = min.x;
+		globalMinimum[2] = min.y;
+		for (int i = 1; i < size; i++) {
+			results[i] = new double[3];
+			MPI_Recv(results[i], 3, MPI_DOUBLE, MPI_ANY_SOURCE, 0, cart_comm, &status);
+		}
+
+		for (int i = 1; i < size; i++) {
+			if (results[i][0] < globalMinimum[0]) {
+				globalMinimum[0] = results[i][0];
+				globalMinimum[1] = results[i][1];
+				globalMinimum[2] = results[i][2];
+			}
+		}
+		
+	}
+	else {
+		globalMinimum[0] = min.value;
+		globalMinimum[1] = min.x;
+		globalMinimum[2] = min.y;
+		MPI_Send(globalMinimum, 3, MPI_DOUBLE, 0, 0, cart_comm);
+	}
+
+	if (rank == 0) {
+		cout << "### x:" << globalMinimum[1] << " y:" << globalMinimum[2] << " value:" << globalMinimum[0] << endl;
 		double end = MPI_Wtime();
 		cout << "Time: " << end - start;
 	}
-
-
 	MPI_Finalize();
 }
